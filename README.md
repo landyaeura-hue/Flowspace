@@ -24,7 +24,8 @@ Cloud saving is on when `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` 
 
 1. SQL Editor → run `supabase/migrations/0001_canvases.sql` (safe to run again).
 2. Authentication → Sign In / Providers → Email: on.
-3. Authentication → URL Configuration: Site URL = your deployed address; Redirect URLs: add
+3. Authentication → URL Configuration: Site URL = your deployed address
+   (`https://landyaeura-hue.github.io/Flowspace/`); Redirect URLs: add
    `https://<your-site>/**` and `http://localhost:5173/**` (email confirmation, sign-in link and
    password-reset links come back to these).
 
@@ -85,6 +86,10 @@ on another device is never silently overwritten (the user picks: use latest / ke
 Use **Share → Export canvas file** in the old preview and **Import canvas file** here to bring a canvas across.
 
 ## Deploy
+
+GitHub Pages (current): `.github/workflows/pages.yml` builds and publishes every push to `main` to
+https://landyaeura-hue.github.io/Flowspace/ (repository Settings → Pages → Source: GitHub Actions, once).
+
 
 Vercel: import this repository; framework preset **Vite**, build `npm run build`, output `dist`;
 add the two `VITE_SUPABASE_…` environment variables.
