@@ -13,19 +13,25 @@ Source: single-file preview "FlowSpace Preview" (1,961 lines, 2026-11-23).
   canvas list and shortcut sheet are pixel-identical to the preview, and the saved document matches;
   no console errors.
 
-## Stage 1b — next
+## Stage 1b — done (2026-11-23)
 
-Split `engine.ts` into typed modules, one at a time, re-running the parity check after each:
+- `engine.ts` split into 24 modules, one per section of the preview, by `tools/split-engine.cjs`
+  (TypeScript compiler API, so every reference was rewritten by symbol, not by text search).
+- Former closure variables now live in one typed `STATE` object (`state.ts`); each module has an
+  `init…()` and `mountEngine()` runs them in the preview's original top-to-bottom order.
+- `// @ts-nocheck` removed: the whole engine type-checks. Document, view, selection, history,
+  canvas index and the DOM refs are typed; type guards `isNode / isText / isEdge / isInk` narrow items.
+  For now `noImplicitAny` and `strictNullChecks` are off (see below).
+- Toast messages and the shortcut sheet moved to `strings.ts`.
+- Parity (`npm run parity`, 16 steps: edit text incl. Chinese, add shapes, connect, Tab extend, pen,
+  lasso + group, duplicate, elastic drag, align, context menu, fit, undo, new canvas, switch canvas,
+  property panel): saved data identical to the preview at every step, no console errors. The only
+  pixel differences are inside the mouse-drawn pen stroke, whose simulated pressure is time-based
+  and differs between two runs of the preview itself as well.
 
-1. `state` – shared editor state object (doc, view, selection, tool, history) instead of closure variables
-2. `text` – text measuring and wrapping
-3. `shapes`, `render` – SVG generation
-4. `ink` – pen strokes (resampling, pressure, nib styles)
-5. `routing` – connector routing
-6. `history`, `storage` – undo/redo and localStorage canvases
-7. `pointer`, `guides`, `quickExtend`, `lasso`, `longPress` – interaction
-8. `physics`, `layout` – elastic mode and auto layout
-9. `panel`, `keyboard`, `clipboard`, `export` – UI wiring
-10. `strings.ts` – all English UI copy in one place
+## Next
 
-Then: Zustand for UI state, and the document moved to Yjs (stage 3 prerequisite).
+1. Turn `noImplicitAny` and `strictNullChecks` back on module by module (start with routing, layout,
+   text, ink — pure logic), annotating parameters.
+2. Remaining copy (panel labels, menus, Shell) into `strings.ts`.
+3. Zustand for UI state; move the document to Yjs (prerequisite for collaboration).
