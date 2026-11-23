@@ -3,6 +3,7 @@
 /** Toast messages with no variable parts. */
 export const MSG = {
   theCanvasIsEmpty: 'The canvas is empty',
+  couldNotLoadCanvas: 'Couldn’t load that canvas — check your connection and try again',
   pngExportFailedTrySvg: 'PNG export failed — try SVG instead',
   thatFileIsnTA: 'That file isn’t a FlowSpace canvas',
   styleCopied: 'Style copied',

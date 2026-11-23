@@ -12,6 +12,7 @@ import { applyView, draw, render } from './render';
 import { esc, find, normalize, sample, snap, uid } from './state-init';
 import { canvasBg, palOf } from './theme';
 import { MSG } from './strings';
+import { SPACE, setSpaceHooks, type SpaceHooks } from './space';
 
 // ---------- history & persistence ----------
 export function commit(pre) { STATE.undoS.push(pre); if (STATE.undoS.length > 200) STATE.undoS.shift(); STATE.redoS = []; changed(); }
@@ -23,18 +24,23 @@ export const mem = {};
 export const sget = k => { try { const v = localStorage.getItem(k); if (v != null) return v; } catch (e: any) { } return mem[k] ?? null; };
 export const sset = (k, v) => { mem[k] = v; try { localStorage.setItem(k, v); return true; } catch (e: any) { return false; } };
 export const sdel = k => { delete mem[k]; try { localStorage.removeItem(k); } catch (e: any) { } };
-export const saveIndex = () => sset('flowspace.index', JSON.stringify(STATE.index));
+export const saveIndex = () => sset(SPACE.ns + 'index', JSON.stringify(STATE.index));
+/** JSON of each canvas document as last written, so unchanged saves don't count as edits */
+const lastDoc = new Map<string, string>();
+export function setStatus(text: string, busy = false) { $('#status').classList.toggle('busy', busy); $('#status span').textContent = text; }
 export function saveNow() {
   if (!STATE.curId) return true;
-  const ok = sset('flowspace.doc.' + STATE.curId, JSON.stringify({ doc: STATE.doc, view: STATE.view }));
-  const ent = STATE.index.list.find(x => x.id === STATE.curId); if (ent) { ent.name = STATE.doc.name; ent.updated = Date.now(); }
-  saveIndex(); return ok;
+  const id = STATE.curId, dj = JSON.stringify(STATE.doc), edited = lastDoc.get(id) !== dj;
+  const ok = sset(SPACE.ns + 'doc.' + id, '{"doc":' + dj + ',"view":' + JSON.stringify(STATE.view) + '}');
+  const ent = STATE.index.list.find(x => x.id === id); if (ent) { ent.name = STATE.doc.name; if (edited) ent.updated = Date.now(); }
+  saveIndex(); if (ok) lastDoc.set(id, dj);
+  if (ok && edited && SPACE.saved) SPACE.saved(id);
+  return ok;
 }
 export function scheduleSave() {
-  $('#status').classList.add('busy'); $('#status span').textContent = 'Saving…';
+  setStatus('Saving…', true);
   clearTimeout(STATE.saveT); STATE.saveT = setTimeout(() => {
-    $('#status span').textContent = saveNow() ? 'Saved locally' : 'Not saved (storage unavailable)';
-    $('#status').classList.remove('busy');
+    if (saveNow()) setStatus(SPACE.savedText, SPACE.savedText.endsWith('…')); else setStatus('Not saved (storage unavailable)');
   }, 400);
 }
 export const blankDoc = (name?) => ({ name: name || 'Untitled canvas', bg: (STATE.doc && STATE.doc.bg) || 'blue', theme: (STATE.doc && STATE.doc.theme) || 'mist', edgeDef: { style: 'orth', arrow: 'end' }, phys: { on: false, strength: 50, gap: 24 }, items: [], edges: [] });
@@ -43,12 +49,28 @@ export function normDoc(d) {
   d.phys = Object.assign({ on: false, strength: 50, gap: 24 }, d.phys || {}); d.edgeDef = Object.assign({ style: 'orth', arrow: 'end' }, d.edgeDef || {});
   d.bg = d.bg === 'white' || d.bg === 'dark' ? d.bg : 'blue'; d.theme = THEMES[d.theme] ? d.theme : 'mist'; d.name = d.name || 'Untitled canvas'; return d;
 }
-export function readCanvas(id) { try { const o = JSON.parse(sget('flowspace.doc.' + id)); if (o && o.doc && Array.isArray(o.doc.items)) return o; } catch (e: any) { } return null; }
+export function readCanvas(id) { try { const o = JSON.parse(sget(SPACE.ns + 'doc.' + id)); if (o && o.doc && Array.isArray(o.doc.items)) return o; } catch (e: any) { } return null; }
+let opening = 0;
 export function openCanvas(id, boot?) {
   if (!boot && STATE.curId) { closeEditor(); physStop(); clearTimeout(STATE.saveT); saveNow(); }
-  const o = readCanvas(id) || { doc: blankDoc(), view: null };
+  let o = readCanvas(id);
+  const tok = ++opening;
+  if (!o && SPACE.fetchDoc) {
+    setStatus('Loading…', true);
+    SPACE.fetchDoc(id).then(ok => {
+      if (tok !== opening) return;
+      if (ok && readCanvas(id)) return openCanvas(id, true);
+      setStatus(SPACE.savedText); toast(MSG.couldNotLoadCanvas);
+      if (!STATE.curId) { // nothing open (first load): fall back to a cached canvas, or a new one
+        const cached = STATE.index.list.find(x => x.id !== id && readCanvas(x.id));
+        if (cached) openCanvas(cached.id, true); else newCanvasSilently();
+      }
+    });
+    return;
+  }
+  o = o || { doc: blankDoc(), view: null };
   STATE.curId = id; STATE.index.current = id; saveIndex();
-  STATE.doc = normDoc(o.doc); STATE.undoS = []; STATE.redoS = []; STATE.sel = new Set(); STATE.prevSel = new Set(); anims.clear(); STATE.ghosts = []; STATE.hoverId = null; STATE.drag = null; STATE.pendingDel = null;
+  STATE.doc = normDoc(o.doc); lastDoc.set(id, JSON.stringify(STATE.doc)); STATE.undoS = []; STATE.redoS = []; STATE.sel = new Set(); STATE.prevSel = new Set(); anims.clear(); STATE.ghosts = []; STATE.hoverId = null; STATE.drag = null; STATE.pendingDel = null;
   $('#fname').value = STATE.doc.name; document.title = STATE.doc.name + ' · FlowSpace';
   setBg(STATE.doc.bg); renderPhys(); draw(); changed();
   if (o.view && o.view.k) { STATE.view = o.view; applyView(); } else requestAnimationFrame(() => fitView(false));
@@ -57,9 +79,10 @@ export function openCanvas(id, boot?) {
 export function uniqueName(base) { const names = new Set(STATE.index.list.map(x => x.name)); if (!names.has(base)) return base; let i = 2; while (names.has(base + ' ' + i)) i++; return base + ' ' + i; }
 export function newCanvas(fromDoc?, label?) {
   closeMenus(); if (STATE.curId) { closeEditor(); saveNow(); }
-  const id = uid('c'), d = fromDoc || blankDoc(); d.name = uniqueName(fromDoc ? d.name : 'Untitled canvas');
+  const id = SPACE.newId(), d = fromDoc || blankDoc(); d.name = uniqueName(fromDoc ? d.name : 'Untitled canvas');
   STATE.index.list.push({ id, name: d.name, updated: Date.now() });
-  sset('flowspace.doc.' + id, JSON.stringify({ doc: d, view: null }));
+  sset(SPACE.ns + 'doc.' + id, JSON.stringify({ doc: d, view: null })); saveIndex();
+  if (SPACE.created) SPACE.created(id);
   openCanvas(id); toast(label || `Created “${d.name}”`);
 }
 export function dupCanvas(id) {
@@ -69,7 +92,8 @@ export function dupCanvas(id) {
 }
 export function deleteCanvas(id) {
   if (STATE.index.list.length < 2) { toast(MSG.keepAtLeastOneCanvas); return; }
-  const ent = STATE.index.list.find(x => x.id === id); STATE.index.list = STATE.index.list.filter(x => x.id !== id); sdel('flowspace.doc.' + id); STATE.pendingDel = null;
+  const ent = STATE.index.list.find(x => x.id === id); STATE.index.list = STATE.index.list.filter(x => x.id !== id); sdel(SPACE.ns + 'doc.' + id); lastDoc.delete(id); STATE.pendingDel = null;
+  if (SPACE.deleted) SPACE.deleted(id);
   if (id === STATE.curId) { STATE.curId = null; const next = [...STATE.index.list].sort((a, b) => b.updated - a.updated)[0]; openCanvas(next.id, true); if (!RM) { STATE.world.style.animation = 'none'; requestAnimationFrame(() => { STATE.world.style.animation = 'k-fade .3s ease-out'; }); } }
   else saveIndex();
   renderFiles(); toast(`Deleted “${ent ? ent.name : ''}”`);
@@ -99,26 +123,50 @@ export function renderFiles() {
   const list = [...STATE.index.list].sort((a, b) => b.updated - a.updated);
   const IC_DUP = '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2"/></svg>';
   const IC_DEL = '<svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/></svg>';
-  $('#mFiles').innerHTML = `<div class="mh"><b>My canvases</b><span>${list.length} · stored in this browser</span></div>
+  $('#mFiles').innerHTML = `<div class="mh"><b>My canvases</b><span>${list.length} · ${SPACE.label}</span></div>
   <button class="newc" data-f="new">＋ New canvas<small>Alt N</small></button><hr>` + list.map(x => {
     if (STATE.pendingDel === x.id) return `<div class="fconf">Delete “${esc(x.name)}”? This can’t be undone.<div><button class="y" data-delyes="${x.id}">Delete</button><button class="n" data-delno="1">Cancel</button></div></div>`;
-    const o = readCanvas(x.id);
-    return `<div class="frow ${x.id === STATE.curId ? 'cur' : ''}" data-open="${x.id}">${thumbSVG(o && o.doc)}<div class="fi"><div class="fn">${esc(x.name)}</div><div class="ft">${x.id === STATE.curId ? 'Current · ' : ''}${relTime(x.updated)} · ${o ? o.doc.items.filter(i => i.type === 'node').length : 0} nodes</div></div>
+    const o = readCanvas(x.id), meta = !o && SPACE.entryMeta ? SPACE.entryMeta(x.id) : undefined;
+    const th = o || !meta || !meta.thumbUrl ? thumbSVG(o && o.doc) : `<img class="th" alt="" src="${esc(meta.thumbUrl)}">`;
+    const nodes = o ? o.doc.items.filter(i => i.type === 'node').length : (meta && meta.nodes) || 0;
+    return `<div class="frow ${x.id === STATE.curId ? 'cur' : ''}" data-open="${x.id}">${th}<div class="fi"><div class="fn">${esc(x.name)}</div><div class="ft">${x.id === STATE.curId ? 'Current · ' : ''}${relTime(x.updated)} · ${nodes} nodes</div></div>
       <button class="ib" data-dup="${x.id}" title="Duplicate canvas">${IC_DUP}</button><button class="ib" data-delc="${x.id}" title="Delete">${IC_DEL}</button></div>`;
-  }).join('');
+  }).join('') + (SPACE.filesExtra ? SPACE.filesExtra() : '');
 }
 export function load() {
-  try { STATE.index = JSON.parse(sget('flowspace.index')); } catch (e: any) { STATE.index = null; }
+  try { STATE.index = JSON.parse(sget(SPACE.ns + 'index')); } catch (e: any) { STATE.index = null; }
   if (!STATE.index || !Array.isArray(STATE.index.list) || !STATE.index.list.length) {
     STATE.index = { current: null, list: [] };
+    if (SPACE.kind !== 'local') { newCanvasSilently(); return; }
     let old = null; try { old = JSON.parse(sget('flowspace.v1')); } catch (e: any) { }
     const id = uid('c'), d = old && old.doc && Array.isArray(old.doc.items) ? old.doc : sample();
     STATE.index.list.push({ id, name: d.name || 'Untitled canvas', updated: Date.now() }); STATE.index.current = id;
-    sset('flowspace.doc.' + id, JSON.stringify({ doc: d, view: old && old.view || null })); saveIndex();
+    sset(SPACE.ns + 'doc.' + id, JSON.stringify({ doc: d, view: old && old.view || null })); saveIndex();
   }
   const id = STATE.index.list.some(x => x.id === STATE.index.current) ? STATE.index.current : STATE.index.list[0].id;
   openCanvas(id, true);
 }
+function newCanvasSilently() {
+  const id = SPACE.newId(), d = blankDoc();
+  STATE.index.list.push({ id, name: d.name, updated: Date.now() }); STATE.index.current = id;
+  sset(SPACE.ns + 'doc.' + id, JSON.stringify({ doc: d, view: null })); saveIndex();
+  if (SPACE.created) SPACE.created(id);
+  openCanvas(id, true);
+}
+/** Switch between the local space and an account's cloud space (saves the open canvas first). */
+export function switchSpace(hooks: SpaceHooks) {
+  if (STATE.curId) { closeEditor(); physStop(); clearTimeout(STATE.saveT); saveNow(); }
+  closeMenus(); STATE.curId = null; opening++; lastDoc.clear();
+  setSpaceHooks(hooks); load();
+  setStatus(SPACE.savedText, SPACE.savedText.endsWith('…'));
+}
+/** The cloud replaced a cached canvas: reload it if it is open (keeps the view). */
+export function reloadIfOpen(id: string) {
+  if (STATE.curId !== id) return;
+  const v = STATE.view; openCanvas(id, true); STATE.view = v; applyView();
+}
+export const currentCanvasId = () => STATE.curId;
+export const indexList = () => STATE.index.list;
 
 /** Runs once at mount, in the original top-to-bottom order of the preview. */
 export function initStorage() {

@@ -10,7 +10,7 @@ import { edgeSVG } from './routing';
 import { expandGroups } from './selection';
 import { nodeSVG, textItemSVG } from './shapes';
 import { find, isEdge, isInk, isNode, isText } from './state-init';
-import { blankDoc, newCanvas, normDoc, uniqueName } from './storage';
+import { blankDoc, newCanvas, normDoc, thumbSVG, uniqueName } from './storage';
 import { bbox } from './text';
 import { buildDefs, canvasBg } from './theme';
 import { MSG } from './strings';
@@ -41,6 +41,33 @@ export function exportSVG() {
   const bgr = STATE.xopts.transparent ? '' : `<rect x="${x0}" y="${y0}" width="${W}" height="${H}" fill="${canvasBg(STATE.doc)}"/>`;
   const s = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="${x0} ${y0} ${W} ${H}" font-family="${FONT}"><defs>${buildDefs(STATE.C)}</defs>${bgr}${edges.map(e => edgeSVG(e, true)).join('')}${nodes.map(n => nodeSVG(n, true)).join('')}${inks.map(k => inkSVG(k, true)).join('')}${texts.map(t => textItemSVG(t, true)).join('')}</svg>`;
   return { s, W, H };
+}
+/** Small PNG of the whole open canvas for the cloud canvas list (null when empty or unsupported). */
+export async function thumbnailPNG(maxW = 480, maxH = 300): Promise<Blob | null> {
+  const its = STATE.doc.items; if (!its.length) return null;
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const it of its) { const b = bbox(it); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h); }
+  const P = 32; x0 -= P; y0 -= P; x1 += P; y1 += P;
+  // keep the list's 58:40 shape so thumbnails are not cropped awkwardly
+  let W = x1 - x0, H = y1 - y0; const want = maxW / maxH;
+  if (W / H > want) { const nh = W / want; y0 -= (nh - H) / 2; H = nh; } else { const nw = H * want; x0 -= (nw - W) / 2; W = nw; }
+  const nodes = its.filter(isNode), texts = its.filter(isText), inks = its.filter(isInk);
+  const s = `<svg xmlns="http://www.w3.org/2000/svg" width="${maxW}" height="${maxH}" viewBox="${x0} ${y0} ${W} ${H}" font-family="${FONT}"><defs>${buildDefs(STATE.C)}</defs><rect x="${x0}" y="${y0}" width="${W}" height="${H}" fill="${canvasBg(STATE.doc)}"/>${STATE.doc.edges.map(e => edgeSVG(e, true)).join('')}${nodes.map(n => nodeSVG(n, true)).join('')}${inks.map(k => inkSVG(k, true)).join('')}${texts.map(t => textItemSVG(t, true)).join('')}</svg>`;
+  try {
+    const img = new Image(); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s); await img.decode();
+    const c = document.createElement('canvas'); c.width = maxW; c.height = maxH;
+    c.getContext('2d').drawImage(img, 0, 0, maxW, maxH);
+    return await new Promise<Blob | null>(res => c.toBlob(b => res(b), 'image/png'));
+  } catch (err: any) { return null; }
+}
+/** PNG of the schematic list thumbnail, for canvases that are not open (no full render available). */
+export async function schematicPNG(doc): Promise<Blob | null> {
+  const s = thumbSVG(doc).replace('<svg class="th"', '<svg xmlns="http://www.w3.org/2000/svg" width="464" height="320"');
+  try {
+    const img = new Image(); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s); await img.decode();
+    const c = document.createElement('canvas'); c.width = 464; c.height = 320; c.getContext('2d').drawImage(img, 0, 0, 464, 320);
+    return await new Promise<Blob | null>(res => c.toBlob(b => res(b), 'image/png'));
+  } catch (err: any) { return null; }
 }
 export const fileBase = () => (STATE.doc.name || 'FlowSpace').replace(/[\\/:*?"<>|]/g, '_');
 export async function doExport(kind) {

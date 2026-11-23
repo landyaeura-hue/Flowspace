@@ -8,6 +8,7 @@ import { draw } from './render';
 import { find, isEdge, savePrefs } from './state-init';
 import { deleteCanvas, dupCanvas, newCanvas, openCanvas, redo, renderFiles, saveNow, scheduleSave, undo } from './storage';
 import { applyTheme, renderThemes } from './theme';
+import { SPACE } from './space';
 
 export function zoomBtn(f) { zoomTo(STATE.view.k * f); }
 export function setBg(b) {
@@ -42,6 +43,8 @@ export function initChrome() {
   $('#bTheme').onclick = e => { e.stopPropagation(); const m = $('#pTheme'), o = m.classList.contains('show'); closeMenus(); if (!o) { renderThemes(); m.classList.add('show'); } };
   $('#bFiles').onclick = e => { e.stopPropagation(); const m = $('#mFiles'), o = m.classList.contains('show'); closeMenus(); if (!o) { STATE.pendingDel = null; renderFiles(); m.classList.add('show'); } };
   $('#mFiles').addEventListener('click', e => {
+    const x = (e.target as HTMLElement).closest<HTMLElement>('[data-x]');
+    if (x && SPACE.filesClick) { e.stopPropagation(); if (SPACE.filesClick(x)) return; }
     const t = (e.target as HTMLInputElement).closest<HTMLInputElement>('[data-f],[data-open],[data-dup],[data-delc],[data-delyes],[data-delno]'); if (!t) return;
     e.stopPropagation();
     if (t.dataset.f === 'new') return newCanvas();

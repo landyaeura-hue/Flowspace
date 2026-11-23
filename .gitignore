@@ -5,3 +5,5 @@ dist
 .env
 .env.*
 qa/out
+dist-mock
+!.env.example

@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { AccountButton, CloudDialogs } from './Account';
 
 /**
  * Static chrome of the editor (toolbars, menus, panels, canvas SVG).
@@ -29,6 +30,7 @@ export const Shell = memo(function Shell() {
           <div className="sep"></div>
           <button className="tb" id="bExport"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"/></svg><span className="tx">Export</span></button>
           <button className="tb pri" id="bShare"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/></svg><span className="tx">Share</span></button>
+          <AccountButton />
         </div>
         <div className="menu float" id="mExport" style={{ right: '96px', width: '232px' }}>
           <button data-m="png">Export PNG<small>2× resolution</small></button>
@@ -89,6 +91,7 @@ export const Shell = memo(function Shell() {
         </div>
         <div id="help"><div className="card"><h3>Keyboard shortcuts<button className="ib" id="helpX" title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></h3><div className="kgrid" id="kgrid"></div></div></div>
         <div id="toast"></div>
+        <CloudDialogs />
     </div>
   );
 }, () => true);
