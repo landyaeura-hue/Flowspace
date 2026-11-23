@@ -12,14 +12,14 @@ import { applyView, draw, render } from './render';
 import { esc, find, normalize, sample, snap, uid } from './state-init';
 import { canvasBg, palOf } from './theme';
 import { MSG } from './strings';
-import { SPACE, setSpaceHooks, type SpaceHooks } from './space';
+import { COLLAB, OPENED, SPACE, setSpaceHooks, type SpaceHooks } from './space';
 
 // ---------- history & persistence ----------
 export function commit(pre) { STATE.undoS.push(pre); if (STATE.undoS.length > 200) STATE.undoS.shift(); STATE.redoS = []; changed(); }
-export function changed() { render(); renderPanel(); scheduleSave(); $('#undo').disabled = !STATE.undoS.length; $('#redo').disabled = !STATE.redoS.length; }
+export function changed() { render(); renderPanel(); scheduleSave(); $('#undo').disabled = !STATE.undoS.length; $('#redo').disabled = !STATE.redoS.length; if (COLLAB.active && COLLAB.afterChange) COLLAB.afterChange(); }
 export function restore(s) { const o = JSON.parse(s); STATE.doc.items = o.items; STATE.doc.edges = o.edges; for (const id of [...STATE.sel]) if (!find(id)) STATE.sel.delete(id); }
-export function undo() { if (!STATE.undoS.length) return; closeEditor(); physStop(); STATE.redoS.push(snap()); restore(STATE.undoS.pop()); changed(); }
-export function redo() { if (!STATE.redoS.length) return; closeEditor(); physStop(); STATE.undoS.push(snap()); restore(STATE.redoS.pop()); changed(); }
+export function undo() { if (COLLAB.active) { if (!COLLAB.readOnly && COLLAB.undo) { closeEditor(); physStop(); COLLAB.undo(); } return; } if (!STATE.undoS.length) return; closeEditor(); physStop(); STATE.redoS.push(snap()); restore(STATE.undoS.pop()); changed(); }
+export function redo() { if (COLLAB.active) { if (!COLLAB.readOnly && COLLAB.redo) { closeEditor(); physStop(); COLLAB.redo(); } return; } if (!STATE.redoS.length) return; closeEditor(); physStop(); STATE.undoS.push(snap()); restore(STATE.redoS.pop()); changed(); }
 export const mem = {};
 export const sget = k => { try { const v = localStorage.getItem(k); if (v != null) return v; } catch (e: any) { } return mem[k] ?? null; };
 export const sset = (k, v) => { mem[k] = v; try { localStorage.setItem(k, v); return true; } catch (e: any) { return false; } };
@@ -38,6 +38,7 @@ export function saveNow() {
   return ok;
 }
 export function scheduleSave() {
+  if (COLLAB.active && COLLAB.touched) COLLAB.touched();
   setStatus('Saving…', true);
   clearTimeout(STATE.saveT); STATE.saveT = setTimeout(() => {
     if (saveNow()) setStatus(SPACE.savedText, SPACE.savedText.endsWith('…')); else setStatus('Not saved (storage unavailable)');
@@ -74,6 +75,7 @@ export function openCanvas(id, boot?) {
   $('#fname').value = STATE.doc.name; document.title = STATE.doc.name + ' · FlowSpace';
   setBg(STATE.doc.bg); renderPhys(); draw(); changed();
   if (o.view && o.view.k) { STATE.view = o.view; applyView(); } else requestAnimationFrame(() => fitView(false));
+  if (OPENED.fn) OPENED.fn(id);
   if (!boot && !RM) { STATE.world.style.animation = 'none'; requestAnimationFrame(() => { STATE.world.style.animation = 'k-fade .3s ease-out'; }); }
 }
 export function uniqueName(base) { const names = new Set(STATE.index.list.map(x => x.name)); if (!names.has(base)) return base; let i = 2; while (names.has(base + ' ' + i)) i++; return base + ' ' + i; }
@@ -92,11 +94,12 @@ export function dupCanvas(id) {
 }
 export function deleteCanvas(id) {
   if (STATE.index.list.length < 2) { toast(MSG.keepAtLeastOneCanvas); return; }
+  const leaving = !!(SPACE.entryMeta && (SPACE.entryMeta(id) || {}).shared);
   const ent = STATE.index.list.find(x => x.id === id); STATE.index.list = STATE.index.list.filter(x => x.id !== id); sdel(SPACE.ns + 'doc.' + id); lastDoc.delete(id); STATE.pendingDel = null;
   if (SPACE.deleted) SPACE.deleted(id);
   if (id === STATE.curId) { STATE.curId = null; const next = [...STATE.index.list].sort((a, b) => b.updated - a.updated)[0]; openCanvas(next.id, true); if (!RM) { STATE.world.style.animation = 'none'; requestAnimationFrame(() => { STATE.world.style.animation = 'k-fade .3s ease-out'; }); } }
   else saveIndex();
-  renderFiles(); toast(`Deleted “${ent ? ent.name : ''}”`);
+  renderFiles(); toast(`${leaving ? 'Left' : 'Deleted'} “${ent ? ent.name : ''}”`);
 }
 export function relTime(t) {
   const d = (Date.now() - t) / 1000;
@@ -125,12 +128,13 @@ export function renderFiles() {
   const IC_DEL = '<svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/></svg>';
   $('#mFiles').innerHTML = `<div class="mh"><b>My canvases</b><span>${list.length} · ${SPACE.label}</span></div>
   <button class="newc" data-f="new">＋ New canvas<small>Alt N</small></button><hr>` + list.map(x => {
-    if (STATE.pendingDel === x.id) return `<div class="fconf">Delete “${esc(x.name)}”? This can’t be undone.<div><button class="y" data-delyes="${x.id}">Delete</button><button class="n" data-delno="1">Cancel</button></div></div>`;
-    const o = readCanvas(x.id), meta = !o && SPACE.entryMeta ? SPACE.entryMeta(x.id) : undefined;
+    const sm = SPACE.entryMeta ? SPACE.entryMeta(x.id) : undefined, shared = !!(sm && sm.shared);
+    if (STATE.pendingDel === x.id) return shared ? `<div class="fconf">Leave “${esc(x.name)}”? You’ll need the link again to reopen it.<div><button class="y" data-delyes="${x.id}">Leave</button><button class="n" data-delno="1">Cancel</button></div></div>` : `<div class="fconf">Delete “${esc(x.name)}”? This can’t be undone.<div><button class="y" data-delyes="${x.id}">Delete</button><button class="n" data-delno="1">Cancel</button></div></div>`;
+    const o = readCanvas(x.id), meta = o ? undefined : sm;
     const th = o || !meta || !meta.thumbUrl ? thumbSVG(o && o.doc) : `<img class="th" alt="" src="${esc(meta.thumbUrl)}">`;
     const nodes = o ? o.doc.items.filter(i => i.type === 'node').length : (meta && meta.nodes) || 0;
-    return `<div class="frow ${x.id === STATE.curId ? 'cur' : ''}" data-open="${x.id}">${th}<div class="fi"><div class="fn">${esc(x.name)}</div><div class="ft">${x.id === STATE.curId ? 'Current · ' : ''}${relTime(x.updated)} · ${nodes} nodes</div></div>
-      <button class="ib" data-dup="${x.id}" title="Duplicate canvas">${IC_DUP}</button><button class="ib" data-delc="${x.id}" title="Delete">${IC_DEL}</button></div>`;
+    return `<div class="frow ${x.id === STATE.curId ? 'cur' : ''}" data-open="${x.id}">${th}<div class="fi"><div class="fn">${esc(x.name)}</div><div class="ft">${x.id === STATE.curId ? 'Current · ' : ''}${shared ? 'Shared · ' : ''}${relTime(x.updated)} · ${nodes} nodes</div></div>
+      <button class="ib" data-dup="${x.id}" title="Duplicate canvas">${IC_DUP}</button><button class="ib" data-delc="${x.id}" title="${shared ? 'Leave' : 'Delete'}">${IC_DEL}</button></div>`;
   }).join('') + (SPACE.filesExtra ? SPACE.filesExtra() : '');
 }
 export function load() {

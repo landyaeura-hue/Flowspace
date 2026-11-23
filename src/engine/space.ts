@@ -8,6 +8,8 @@ export interface FileEntryMeta {
   nodes?: number;
   /** thumbnail image when the canvas is not cached on this device */
   thumbUrl?: string;
+  /** someone else's canvas shared with me: deleting it means leaving it */
+  shared?: boolean;
 }
 
 export interface SpaceHooks {
@@ -42,3 +44,23 @@ export const LOCAL_SPACE: SpaceHooks = {
 
 export let SPACE: SpaceHooks = LOCAL_SPACE;
 export function setSpaceHooks(s: SpaceHooks) { SPACE = s; }
+
+/**
+ * Live collaboration hooks (set by src/collab while a shared session is open).
+ * The engine keeps editing its plain document; the session mirrors it to Yjs.
+ */
+export interface CollabHooks {
+  active: boolean;
+  /** viewer: the canvas can be panned and zoomed, nothing else */
+  readOnly: boolean;
+  /** after every committed change (changed()) */
+  afterChange?(): void;
+  /** after any change that schedules a save (drags, settings) */
+  touched?(): void;
+  undo?(): void;
+  redo?(): void;
+}
+export const COLLAB: CollabHooks = { active: false, readOnly: false };
+
+/** Notified whenever a canvas is opened (cloud sync starts / stops live sessions). */
+export const OPENED: { fn?: (id: string) => void } = {};

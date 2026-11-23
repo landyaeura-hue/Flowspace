@@ -1,3 +1,4 @@
+import { COLLAB } from './space';
 // Generated from the preview engine by tools/split-engine.cjs, then maintained by hand.
 import { STATE } from './state';
 import { FONT, LBL_FS, LH } from './constants';
@@ -13,7 +14,7 @@ import { tc } from './theme';
 
 // ---------- editing ----------
 export function openEditor(id, pre?) {
-  const it = find(id); if (!it || isInk(it)) return;
+  const it = find(id); if (!it || isInk(it) || COLLAB.readOnly) return;
   closeEditor(); STATE.editing = id; STATE.sel = new Set([id]); if (anims.has(id)) STATE.prevSel.add(id);
   const E = isEdge(it);
   STATE.editing_pre = pre || snap(); STATE.editing_orig = E ? (it.label || '') : it.text; STATE.editing_new = !!pre;

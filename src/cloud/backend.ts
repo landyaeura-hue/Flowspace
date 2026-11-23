@@ -4,16 +4,35 @@ import type { CanvasDoc, View } from '../engine/types';
 
 export interface CloudUser { id: string; email: string }
 
+export type Role = 'owner' | 'editor' | 'viewer';
+
 export interface CanvasRow {
   id: string;
+  /** the signed-in user's role on this canvas */
+  role?: Role;
   name: string;
   updated_at: string;
   node_count: number;
   thumb_path: string | null;
   version: number;
 }
-export interface CanvasFull extends CanvasRow { doc: CanvasDoc; view: View | null }
-export interface CanvasWrite { name: string; doc: CanvasDoc; view: View | null; node_count: number }
+export interface CanvasFull extends CanvasRow { doc: CanvasDoc; view: View | null; ydoc?: string | null }
+export interface CanvasWrite { name: string; doc: CanvasDoc; view: View | null; node_count: number; ydoc?: string }
+
+export interface Person { user_id: string; email: string; role: Role }
+export interface ShareLink { token: string; role: 'editor' | 'viewer' }
+
+/** Someone in a live session. */
+export interface PeerInfo { uid: string; email: string; color: string; role: Role }
+export interface RoomHandlers {
+  /** messages on the document channel (from editors) */
+  doc(msg: any): void;
+  /** cursors and sync requests (from everyone) */
+  aw(msg: any): void;
+  presence(peers: PeerInfo[]): void;
+  status(s: 'joined' | 'error' | 'closed'): void;
+}
+export interface Room { sendDoc(msg: any): void; sendAw(msg: any): void; close(): void }
 
 export type AuthEvent = 'SIGNED_IN' | 'SIGNED_OUT' | 'PASSWORD_RECOVERY' | 'OTHER';
 
@@ -44,6 +63,17 @@ export interface CloudBackend {
   /** uploads the thumbnail and records its path on the canvas row */
   putThumb(userId: string, id: string, png: Blob): Promise<string>;
   thumbUrls(paths: string[]): Promise<Record<string, string>>;
+
+  // ---- sharing (stage 3) ----
+  people(canvasId: string): Promise<Person[]>;
+  links(canvasId: string): Promise<ShareLink[]>;
+  createLink(canvasId: string, role: 'editor' | 'viewer', token: string): Promise<void>;
+  deleteLink(canvasId: string, role: 'editor' | 'viewer'): Promise<void>;
+  setRole(canvasId: string, userId: string, role: 'editor' | 'viewer'): Promise<void>;
+  removeMember(canvasId: string, userId: string): Promise<void>;
+  /** open a share link; returns the canvas and the role it grants */
+  join(token: string): Promise<{ canvasId: string; role: Role }>;
+  openRoom(canvasId: string, me: PeerInfo, h: RoomHandlers): Room;
 }
 
 export function isNetworkError(e: unknown): boolean {

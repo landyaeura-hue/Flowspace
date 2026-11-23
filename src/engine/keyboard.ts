@@ -12,6 +12,7 @@ import { arrange, copy, copyStyle, del, groupSel, mutate, paste, pasteStyle, sel
 import { isNode } from './state-init';
 import { changed, newCanvas, redo, undo } from './storage';
 import { MSG } from './strings';
+import { COLLAB } from './space';
 
 // ---------- keyboard ----------
 export const typing = () => STATE.editing || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement && document.activeElement.tagName);
@@ -21,6 +22,7 @@ export function initKeyboard() {
   window.addEventListener('keydown', e => {
     if (typing()) return;
     const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
+    if (COLLAB.readOnly && !(e.code === 'Space' || k === 'escape' || k === '?' || (mod && ['0', '=', '-', '+', 'c', 'a'].includes(k)))) return;
     if (e.code === 'Space') { if (!STATE.spaceDown) { STATE.spaceDown = true; STATE.app.classList.add('panning'); } e.preventDefault(); return; }
     if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
     if (mod && k === 'y') { e.preventDefault(); redo(); return; }

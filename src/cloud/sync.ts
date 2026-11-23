@@ -9,13 +9,17 @@ import { STATE } from '../engine/state';
 import { $ } from '../engine/dom';
 import { toast } from '../engine/help';
 import { schematicPNG, thumbnailPNG } from '../engine/export';
-import { LOCAL_SPACE, SPACE, setSpaceHooks, type SpaceHooks } from '../engine/space';
+import { LOCAL_SPACE, OPENED, SPACE, setSpaceHooks, type SpaceHooks } from '../engine/space';
+import { encodeLive, isLive, mergeIntoLive, startLive, stopLive, type SessionCtx } from '../collab/session';
+import { mergeStates } from '../collab/binding';
 import {
-  currentCanvasId, deleteCanvas, indexList, normDoc, openCanvas, readCanvas, reloadIfOpen, renderFiles,
+  currentCanvasId, deleteCanvas, indexList, newCanvas, normDoc, openCanvas, readCanvas, reloadIfOpen, renderFiles,
   saveIndex, sdel, setStatus, sget, sset, switchSpace,
 } from '../engine/storage';
 
 interface Meta {
+  /** 'leave' = remove my membership of someone else's canvas */
+  leave?: boolean;
   /** server version this device's cache is based on (absent = not on the server yet) */
   v?: number;
   dirty?: boolean;
@@ -44,7 +48,13 @@ const metaKey = () => ns + 'meta';
 const saveMeta = () => sset(metaKey(), JSON.stringify(meta));
 const M = (id: string) => (meta[id] ||= {});
 const nodeCount = (doc: any) => (doc.items || []).filter((i: any) => i.type === 'node').length;
-const toWrite = (o: { doc: any; view: any }): CanvasWrite => ({ name: o.doc.name || 'Untitled canvas', doc: o.doc, view: o.view || null, node_count: nodeCount(o.doc) });
+const yKey = (id: string) => ns + 'y.' + id;
+function toWrite(id: string, o: { doc: any; view: any }): CanvasWrite {
+  const w: CanvasWrite = { name: o.doc.name || 'Untitled canvas', doc: o.doc, view: o.view || null, node_count: nodeCount(o.doc) };
+  const y = encodeLive(id) || sget(yKey(id)); if (y) w.ydoc = y;
+  return w;
+}
+const roleOf = (id: string) => (remote.get(id)?.role) || 'owner';
 const isCloud = () => SPACE.kind === 'cloud';
 const menuOpen = () => $('#mFiles').classList.contains('show');
 
@@ -63,17 +73,19 @@ const HOOKS: SpaceHooks = {
   label: 'in your account',
   newId: () => crypto.randomUUID(),
   get savedText() { return statusText(); },
-  saved: id => markDirty(id),
+  saved: id => { if (!isLive(id)) markDirty(id); }, // live canvases are marked by their Yjs session
   created: id => markDirty(id),
   deleted: id => {
-    const m = M(id);
-    if (m.v == null) delete meta[id]; else { meta[id] = { v: m.v, del: true }; }
+    const m = M(id), leave = roleOf(id) !== 'owner';
+    if (isLive(id)) stopLive();
+    sdel(yKey(id));
+    if (m.v == null && !leave) delete meta[id]; else { meta[id] = { v: m.v, del: true, leave }; }
     remote.delete(id); saveMeta(); schedulePush(300);
   },
   fetchDoc: id => fetchDoc(id),
   entryMeta: id => {
     const r = remote.get(id); if (!r) return undefined;
-    return { nodes: r.node_count, thumbUrl: r.thumb_path ? thumbUrl[r.thumb_path] : undefined };
+    return { nodes: r.node_count, thumbUrl: r.thumb_path ? thumbUrl[r.thumb_path] : undefined, shared: !!r.role && r.role !== 'owner' };
   },
   filesExtra: () => {
     const n = localPending().length;
@@ -87,6 +99,7 @@ const HOOKS: SpaceHooks = {
 
 // ---------- saving ----------
 function markDirty(id: string) {
+  if (roleOf(id) === 'viewer') return;
   const m = M(id); m.dirty = true; m.seq = (m.seq || 0) + 1; saveMeta();
   if (!useCloud.getState().conflict) setSync('saving');
   schedulePush(PUSH_DELAY);
@@ -104,11 +117,11 @@ export async function push(): Promise<void> {
       if (!user || user.id !== uid) return;
       const m = meta[id]; if (!m || m.conflict) continue;
       try {
-        if (m.del) { await be.remove(id); delete meta[id]; saveMeta(); continue; }
+        if (m.del) { if (m.leave) await be.removeMember(id, uid); else await be.remove(id); delete meta[id]; saveMeta(); continue; }
         if (!m.dirty) continue;
         const seq = m.seq, o = readCanvas(id);
         if (!o) { m.dirty = false; saveMeta(); continue; }
-        const w = toWrite(o);
+        const w = toWrite(id, o);
         let v: number | null;
         if (m.v == null) {
           try { v = await be.insert(id, w); }
@@ -116,10 +129,12 @@ export async function push(): Promise<void> {
         } else v = await be.update(id, w, m.v);
         if (v == null) v = await settle(id, w);
         if (v == null) continue; // conflict raised
+        if (v < 0) { pushAgain = true; continue; } // merged someone else's saved changes: save again
         m.v = v; if (m.seq === seq) m.dirty = false; saveMeta();
         const r = remote.get(id);
         remote.set(id, { id, name: w.name, node_count: w.node_count, version: v, updated_at: new Date().toISOString(), thumb_path: r ? r.thumb_path : null });
-        if (id === currentCanvasId()) { if (Date.now() - (m.th || 0) > THUMB_EVERY) await thumb(id); }
+        if (roleOf(id) !== 'owner') { /* thumbnails are the owner's */ }
+        else if (id === currentCanvasId()) { if (Date.now() - (m.th || 0) > THUMB_EVERY) await thumb(id); }
         else if (!m.th && w.doc.items.length) await thumb(id, w.doc);
       } catch (e) { failure = e; if (isNetworkError(e) || (e as any)?.kind === 'auth') break; }
     }
@@ -143,6 +158,13 @@ async function settle(id: string, w: CanvasWrite): Promise<number | null> {
     const v = await be.insert(id, w); toast(`“${w.name}” was deleted elsewhere — saved it again`); return v;
   }
   if (JSON.stringify(r.doc) === JSON.stringify(w.doc) && r.name === w.name) return r.version;
+  // both sides have a shared (Yjs) state: merge them, nothing is lost and nobody has to choose
+  if (r.ydoc && isLive(id)) { mergeIntoLive(id, r.ydoc); M(id).v = r.version; saveMeta(); return -1; }
+  if (r.ydoc && sget(yKey(id))) {
+    const mg = mergeStates(sget(yKey(id)), r.ydoc), o = readCanvas(id);
+    sset(ns + 'doc.' + id, JSON.stringify({ doc: normDoc(mg.doc), view: o ? o.view : r.view || null })); sset(yKey(id), mg.state);
+    M(id).v = r.version; saveMeta(); return -1;
+  }
   conflictRemote = r; M(id).conflict = true; saveMeta();
   setCloud({ conflict: { id, name: w.name } });
   return null;
@@ -167,10 +189,11 @@ export function resolveConflict(choice: 'theirs' | 'mine' | 'both') {
 
 function writeCache(r: CanvasFull) {
   sset(ns + 'doc.' + r.id, JSON.stringify({ doc: normDoc({ ...r.doc, name: r.name }), view: r.view || null }));
+  if (r.ydoc) sset(yKey(r.id), r.ydoc); else sdel(yKey(r.id));
   meta[r.id] = { v: r.version };
   const ent = indexList().find(x => x.id === r.id);
   if (ent) { ent.name = r.name; ent.updated = Date.parse(r.updated_at) || ent.updated; }
-  remote.set(r.id, { id: r.id, name: r.name, updated_at: r.updated_at, node_count: r.node_count, thumb_path: r.thumb_path, version: r.version });
+  remote.set(r.id, { id: r.id, name: r.name, updated_at: r.updated_at, node_count: r.node_count, thumb_path: r.thumb_path, version: r.version, role: r.role || remote.get(r.id)?.role });
 }
 
 async function fetchDoc(id: string): Promise<boolean> {
@@ -212,17 +235,20 @@ export async function refresh(force = false) {
     if (m.dirty) continue;
     ent.name = r.name; ent.updated = Date.parse(r.updated_at) || ent.updated;
     if (m.v !== r.version && sget(ns + 'doc.' + r.id) != null) {
-      if (r.id === cur) curStale = true; else { sdel(ns + 'doc.' + r.id); delete meta[r.id]; }
+      if (r.id === cur) curStale = true; else { sdel(ns + 'doc.' + r.id); sdel(yKey(r.id)); delete meta[r.id]; }
     }
   }
   for (const ent of [...list]) {
     const m = meta[ent.id];
     if (seen.has(ent.id) || !m || m.v == null || m.dirty) continue; // not on the server yet: will be uploaded
-    list.splice(list.indexOf(ent), 1); sdel(ns + 'doc.' + ent.id); delete meta[ent.id];
+    list.splice(list.indexOf(ent), 1); sdel(ns + 'doc.' + ent.id); sdel(yKey(ent.id)); delete meta[ent.id];
     if (ent.id === cur) curGone = true;
   }
   saveIndex(); saveMeta();
-  if (curGone) { toast('This canvas was deleted on another device'); switchSpace(HOOKS); }
+  if (curGone) { stopLive(); toast('This canvas was deleted or is no longer shared with you'); switchSpace(HOOKS); }
+  else if (curStale && isLive(cur)) {
+    try { const r = await be.get(cur); if (r && r.ydoc) { mergeIntoLive(cur, r.ydoc); if (!M(cur).dirty) M(cur).v = r.version; saveMeta(); } } catch { /* next time */ }
+  }
   else if (curStale && await fetchDoc(cur)) { reloadIfOpen(cur); toast('Updated with changes from another device'); }
   const paths = rows.filter(r => r.thumb_path && !thumbUrl[r.thumb_path]).map(r => r.thumb_path as string);
   if (paths.length) { try { Object.assign(thumbUrl, await be.thumbUrls(paths)); } catch { /* thumbnails are optional */ } }
@@ -287,6 +313,8 @@ async function startSession(u: CloudUser) {
   if (!isCloud() || SPACE !== HOOKS) switchSpace(HOOKS);
   setSync(Object.values(meta).some(m => m.dirty || m.del) ? 'saving' : 'saved');
   await refresh(true); push();
+  if (isCloud()) { const c = currentCanvasId(); if (c) opened(c); }
+  await handleJoin();
   const n = localPending().length;
   setCloud({ uploadable: n });
   if (n && sget(askedKey()) == null) { sset(askedKey(), '1'); setCloud({ dialog: 'upload' }); }
@@ -294,6 +322,7 @@ async function startSession(u: CloudUser) {
 
 function endSession(clearCache: boolean) {
   const old = ns;
+  stopLive();
   user = null; meta = {}; remote.clear(); thumbUrl = {}; conflictRemote = null; clearTimeout(pushT);
   sdel(LAST_USER);
   if (isCloud()) switchSpace(LOCAL_SPACE);
@@ -329,8 +358,52 @@ export function preselectSpace() {
   setSpaceHooks(HOOKS);
 }
 
+// ---------- live sessions & share links ----------
+const ctx = (): SessionCtx => ({
+  backend: be, me: { uid: user!.id, email: user!.email },
+  dirty: id => markDirty(id),
+  cacheState: (id, st) => { if (user && sget(ns + 'doc.' + id) != null) sset(yKey(id), st); },
+});
+function opened(id: string) {
+  if (!user || !isCloud()) { stopLive(); return; }
+  startLive(id, roleOf(id), sget(yKey(id)), ctx());
+}
+const JOIN_KEY = 'flowspace.pendingJoin';
+async function handleJoin() {
+  const token = sget(JOIN_KEY); if (!token || !user) return;
+  sdel(JOIN_KEY); setCloud({ joinPending: false });
+  try {
+    const { canvasId, role } = await be.join(token);
+    lastRefresh = 0; await refresh(true);
+    if (!indexList().some(x => x.id === canvasId)) { const r = remote.get(canvasId); indexList().push({ id: canvasId, name: r ? r.name : 'Shared canvas', updated: Date.now() }); saveIndex(); }
+    if (currentCanvasId() !== canvasId) openCanvas(canvasId); else opened(canvasId);
+    const name = remote.get(canvasId)?.name || 'the canvas';
+    toast(role === 'viewer' ? `Opened “${name}” — view only` : role === 'owner' ? `“${name}” is your own canvas` : `Opened “${name}” — you can edit`);
+  } catch (e: any) { toast(e?.message || 'Couldn’t open that link'); }
+}
+/** Make sure a canvas exists on the server (before sharing it). */
+export async function ensureOnServer(id: string): Promise<boolean> {
+  for (let i = 0; i < 40; i++) {
+    if (M(id).v != null && !M(id).dirty) return true;
+    await push(); if (M(id).v != null) return true;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return M(id).v != null;
+}
+export const backendRef = () => be;
+export const currentUser = () => user;
+export const roleOfCanvas = (id: string) => roleOf(id);
+export function afterLeave(id: string) {
+  if (!indexList().some(x => x.id === id)) return;
+  if (indexList().length < 2) newCanvas();
+  deleteCanvas(id);
+}
+
 export async function initSync(backend: CloudBackend) {
   be = backend;
+  OPENED.fn = id => { if (user && isCloud()) opened(id); else stopLive(); };
+  const jt = new URLSearchParams(window.location.search).get('join');
+  if (jt) { sset(JOIN_KEY, jt); const u = new URL(window.location.href); u.searchParams.delete('join'); window.history.replaceState(null, '', u.pathname + u.search + u.hash); }
   backend.onAuth((ev, u) => {
     if (ev === 'SIGNED_OUT') { if (user) endSession(false); return; }
     if (ev === 'PASSWORD_RECOVERY') setCloud({ dialog: 'newpw' });
@@ -339,7 +412,10 @@ export async function initSync(backend: CloudBackend) {
   const u = await backend.getUser();
   setCloud({ ready: true });
   if (u) await startSession(u);
-  else if (isCloud()) endSession(false);
+  else {
+    if (isCloud()) endSession(false);
+    if (sget(JOIN_KEY)) setCloud({ dialog: 'signin', joinPending: true });
+  }
   window.addEventListener('online', () => { refresh(true); push(); });
   window.addEventListener('focus', () => { refresh(); });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') push(); else refresh(); });

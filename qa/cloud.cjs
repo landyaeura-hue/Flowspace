@@ -73,37 +73,20 @@ const ok = (cond, label, extra = '') => { n++; if (!cond) failed++; console.log(
   ok(await waitStatus('Saved'), 'back online: synced');
   ok((await db()).rows[id].version === before + 1, 'offline edit reached the server');
 
-  // ---- conflict
-  await p.evaluate(i => window.__mockcloud.editElsewhere(i, r => { r.doc.items = r.doc.items.slice(1); r.name = 'Edited elsewhere'; }), id);
-  await addShape(1000, 500);
-  await sleep(2500);
-  ok(await p.isVisible('.conflict'), 'conflict prompt shown');
-  ok((await status()) === 'Sync conflict', 'status says Sync conflict', await status());
-  await shot('5-conflict');
-  await p.click('.conflict button.pri'); // keep both
-  ok(await waitStatus('Saved'), 'keep both: saved');
-  R = await rows();
-  ok(R.some(r => r.name === 'Edited elsewhere') && R.some(r => / \(my copy\)$/.test(r.name)), 'both versions on the server', R.map(r => r.name).join(', '));
-  ok((await p.inputValue('#fname')) === 'Edited elsewhere', 'open canvas now shows the other device’s version');
-
-  // ---- remote change while open (no local edits)
-  const id2 = await curId();
-  await p.evaluate(i => window.__mockcloud.editElsewhere(i, r => { r.name = 'Renamed on phone'; }), id2);
-  await p.evaluate(() => window.dispatchEvent(new Event('online')));
-  await sleep(1200);
-  ok((await p.inputValue('#fname')) === 'Renamed on phone', 'remote change loaded into the open canvas', await p.inputValue('#fname'));
+  // (concurrent edits on two devices now merge through Yjs: see qa/collab.cjs)
+  const nameBefore = await p.inputValue('#fname');
 
   // ---- reload: still signed in, cloud space opens directly, no second upload offer
   await p.reload(); await sleep(1500);
   ok(await p.isVisible('#bAccount') && !(await p.isVisible('.modal')), 'after reload: signed in, no dialog');
-  ok((await p.inputValue('#fname')) === 'Renamed on phone', 'after reload: same canvas open');
+  ok((await p.inputValue('#fname')) === nameBefore, 'after reload: same canvas open', await p.inputValue('#fname'));
 
   // ---- "new device": drop this account's cache, reload → list from server, docs fetched on open
   await p.evaluate(() => { const u = localStorage.getItem('flowspace.lastUser'); for (const k of Object.keys(localStorage)) if (k.startsWith(`flowspace.u.${u}.`)) localStorage.removeItem(k); });
   await p.reload(); await sleep(2000);
   await p.click('#bFiles'); await sleep(500);
   const nRows = await p.locator('#mFiles [data-open]').count(), imgs = await p.locator('#mFiles img.th').count();
-  ok(nRows === 3, 'fresh device: all 3 canvases listed', String(nRows));
+  ok(nRows === 2, 'fresh device: both canvases listed', String(nRows));
   ok(imgs >= 1, 'fresh device: server thumbnails shown for canvases not yet downloaded', `${imgs} images`);
   await shot('6-fresh-device-list');
   const other = p.locator('#mFiles [data-open]:not(.cur)').first(); const otherName = await other.locator('.fn').textContent();
@@ -132,7 +115,7 @@ const ok = (cond, label, extra = '') => { n++; if (!cond) failed++; console.log(
   await p.fill('input[type=password]', 'password123'); await p.click('.modal button.pri'); await sleep(1500);
   ok(await p.isVisible('#bAccount') && !(await p.isVisible('.modal')), 'signed in again, no repeated upload offer');
   await p.click('#bFiles'); await sleep(400);
-  ok((await p.locator('#mFiles [data-open]').count()) === 2, 'account canvases back after sign-in');
+  ok((await p.locator('#mFiles [data-open]').count()) === 1, 'account canvases back after sign-in');
   await shot('8-signed-in-again');
 
   ok(errs.length === 0, 'no console errors', errs.join(' | '));

@@ -107,6 +107,7 @@ function DialogBody({ kind }: { kind: Exclude<Dialog, null> }) {
   const errP = err && <p className="err">{err}</p>;
 
   if (kind === 'signin') return <Modal title={title} onClose={close}>
+    {useCloud.getState().joinPending && <p className="note big join">Sign in or create an account to open the canvas that was shared with you.</p>}
     <form onSubmit={e => run(e, () => be.signIn(email.trim(), pw))}>
       {emailIn}
       <label>Password<input type="password" autoComplete="current-password" required value={pw} onChange={e => setPw(e.target.value)} /></label>

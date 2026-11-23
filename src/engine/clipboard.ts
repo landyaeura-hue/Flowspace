@@ -1,3 +1,4 @@
+import { COLLAB } from './space';
 // Generated from the preview engine by tools/split-engine.cjs, then maintained by hand.
 import { STATE } from './state';
 import { typing } from './keyboard';
@@ -12,9 +13,9 @@ export function initClipboard() {
   STATE.cutDone = true;
   STATE.pasteDone = true;
   document.addEventListener('copy', e => { if (typing() || !copy()) return; e.preventDefault(); writeClip(e); });
-  document.addEventListener('cut', e => { if (typing()) return; STATE.cutDone = true; if (!copy()) return; e.preventDefault(); writeClip(e); del(); });
+  document.addEventListener('cut', e => { if (typing() || COLLAB.readOnly) return; STATE.cutDone = true; if (!copy()) return; e.preventDefault(); writeClip(e); del(); });
   document.addEventListener('paste', e => {
-    if (typing()) return; STATE.pasteDone = true; e.preventDefault();
+    if (typing() || COLLAB.readOnly) return; STATE.pasteDone = true; e.preventDefault();
     const html = e.clipboardData.getData('text/html') || '', mt = html.match(/<!--flowspace:([^>]*?)-->/);
     if (mt) { try { const j = decodeURIComponent(mt[1]); if (j !== STATE.clip) { STATE.clip = j; STATE.pasteN = 0; } } catch (er: any) { } paste(); return; }
     const t = e.clipboardData.getData('text/plain');

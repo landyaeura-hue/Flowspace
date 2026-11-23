@@ -18,6 +18,7 @@ import { find, isEdge, isInk, isNode, isText, normalize, snap, touches, uid } fr
 import { changed, commit, restore } from './storage';
 import { TPX, TPY, bbox, fitNode } from './text';
 import { MSG } from './strings';
+import { COLLAB } from './space';
 
 // ---------- pointer interaction ----------
 export function setTool(t) {
@@ -203,7 +204,7 @@ export function initPointer() {
     const p = toWorld(e), tgt = (e.target as HTMLInputElement).closest<HTMLInputElement>('[data-id],[data-handle],[data-conn],[data-eend]');
     try { STATE.svg.setPointerCapture(e.pointerId); } catch (er: any) { }
     cancelAnimationFrame(STATE.viewAnim);
-    if (e.button === 1 || STATE.tool === 'hand' || STATE.spaceDown) { STATE.drag = { type: 'pan', sx: e.clientX, sy: e.clientY, vx: STATE.view.x, vy: STATE.view.y }; STATE.app.classList.add('grabbing'); return; }
+    if (e.button === 1 || STATE.tool === 'hand' || STATE.spaceDown || COLLAB.readOnly) { STATE.drag = { type: 'pan', sx: e.clientX, sy: e.clientY, vx: STATE.view.x, vy: STATE.view.y }; STATE.app.classList.add('grabbing'); return; }
     if (e.pointerType === 'pen' && (e.buttons & 32)) { STATE.drag = { type: 'erase', pre: snap(), n: 0 }; eraseAt(e); return; }
     if (e.button !== 0) return;
     if (STATE.painter) {
@@ -339,7 +340,7 @@ export function initPointer() {
     if (c === 'pen') setTool('pen');
   });
   STATE.svg.addEventListener('contextmenu', e => {
-    e.preventDefault(); if (STATE.editing) closeEditor();
+    e.preventDefault(); if (COLLAB.readOnly) return; if (STATE.editing) closeEditor();
     const el = document.elementFromPoint(e.clientX, e.clientY), t = el && el.closest<HTMLInputElement>('[data-id]'), id = t && t.dataset.id;
     if (id && !STATE.sel.has(id)) { STATE.sel = expandGroups(new Set([id])); changed(); }
     else if (!id && STATE.sel.size) { STATE.sel.clear(); changed(); }
